@@ -571,4 +571,335 @@
                 this.ABS_MIN = 0.5;
                 this.ABS_MAX = 45.0;
 
-                //
+                // Initial viewing box boundaries
+                this.minFreq = 0.8;
+                this.maxFreq = 42.0;
+                this.padding = 50;
+
+                this.hoveredBand = null;
+
+                this.initCanvasSize();
+                this.bindEvents();
+                this.render();
+            }
+
+            initCanvasSize() {
+                const dpr = window.devicePixelRatio || 1;
+                this.canvas.width = this.wrapper.clientWidth * dpr;
+                this.canvas.height = 380 * dpr;
+                this.canvas.style.width = this.wrapper.clientWidth + 'px';
+                this.canvas.style.height = '380px';
+                this.ctx.scale(dpr, dpr);
+            }
+
+            get logicalWidth() { return this.canvas.width / (window.devicePixelRatio || 1); }
+            get logicalHeight() { return this.canvas.height / (window.devicePixelRatio || 1); }
+
+            freqToX(freq) {
+                const availableWidth = this.logicalWidth - (2 * this.padding);
+                return ((freq - this.minFreq) / (this.maxFreq - this.minFreq)) * availableWidth + this.padding;
+            }
+
+            xToFreq(x) {
+                const availableWidth = this.logicalWidth - (2 * this.padding);
+                return ((x - this.padding) / availableWidth) * (this.maxFreq - this.minFreq) + this.minFreq;
+            }
+
+            bindEvents() {
+                // Focus Animation Extents Adjuster
+                window.focusOnRange = (min, max) => {
+                    const span = max - min;
+                    this.minFreq = Math.max(this.ABS_MIN, min - (span * 0.2));
+                    this.maxFreq = Math.min(this.ABS_MAX, max + (span * 0.2));
+                    this.render();
+                    this.wrapper.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                };
+
+                // Resize Registry
+                window.addEventListener('resize', () => {
+                    this.initCanvasSize();
+                    this.render();
+                });
+
+                // Zoom Core Functionality (Targeted Window Scaling)
+                this.wrapper.addEventListener('wheel', (e) => {
+                    e.preventDefault();
+                    const rect = this.canvas.getBoundingClientRect();
+                    const mouseX = e.clientX - rect.left;
+                    
+                    // Anchor point conversion logic
+                    const targetFreq = this.xToFreq(mouseX);
+                    const zoomFactor = e.deltaY < 0 ? 1.2 : 0.83;
+                    
+                    const leftSpan = targetFreq - this.minFreq;
+                    const rightSpan = this.maxFreq - targetFreq;
+
+                    let newMin = targetFreq - (leftSpan / zoomFactor);
+                    let newMax = targetFreq + (rightSpan / zoomFactor);
+
+                    if (newMax - newMin < 0.05) return; // Prevent collapse
+
+                    // Guardrails clamping
+                    if (newMin < this.ABS_MIN) newMin = this.ABS_MIN;
+                    if (newMax > this.ABS_MAX) newMax = this.ABS_MAX;
+
+                    this.minFreq = newMin;
+                    this.maxFreq = newMax;
+                    this.render();
+                    this.updateTooltip(e);
+                });
+
+                // UI Interface Clicks
+                document.getElementById('zoomIn').addEventListener('click', () => this.clickZoom(1.4));
+                document.getElementById('zoomOut').addEventListener('click', () => this.clickZoom(0.7));
+                document.getElementById('resetZoom').addEventListener('click', () => {
+                    this.minFreq = 0.8;
+                    this.maxFreq = 42.0;
+                    this.render();
+                });
+
+                // Drag & Pan Subsystem
+                let isDragging = false;
+                let lastX = 0;
+
+                this.wrapper.addEventListener('mousedown', (e) => {
+                    isDragging = true;
+                    lastX = e.clientX;
+                    this.wrapper.classList.add('dragging');
+                });
+
+                document.addEventListener('mousemove', (e) => {
+                    if (isDragging) {
+                        const deltaX = e.clientX - lastX;
+                        lastX = e.clientX;
+                        
+                        const freqSpan = this.maxFreq - this.minFreq;
+                        const widthPx = this.logicalWidth - (2 * this.padding);
+                        const deltaFreq = (deltaX / widthPx) * freqSpan;
+
+                        let newMin = this.minFreq - deltaFreq;
+                        let newMax = this.maxFreq - deltaFreq;
+
+                        if (newMin >= this.ABS_MIN && newMax <= this.ABS_MAX) {
+                            this.minFreq = newMin;
+                            this.maxFreq = newMax;
+                            this.render();
+                        }
+                    }
+                    this.updateTooltip(e);
+                });
+
+                document.addEventListener('mouseup', () => {
+                    isDragging = false;
+                    this.wrapper.classList.remove('dragging');
+                });
+
+                this.wrapper.addEventListener('mouseleave', () => {
+                    this.tooltip.style.display = 'none';
+                    this.hoveredBand = null;
+                    this.render();
+                });
+            }
+
+            clickZoom(factor) {
+                const mid = (this.minFreq + this.maxFreq) / 2;
+                const halfSpan = (this.maxFreq - this.minFreq) / (2 * factor);
+                this.minFreq = Math.max(this.ABS_MIN, mid - halfSpan);
+                this.maxFreq = Math.min(this.ABS_MAX, mid + halfSpan);
+                this.render();
+            }
+
+            updateTooltip(e) {
+                const rect = this.canvas.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                if (mouseX < this.padding || mouseX > this.logicalWidth - this.padding || mouseY < 40 || mouseY > this.logicalHeight - 50) {
+                    this.tooltip.style.display = 'none';
+                    return;
+                }
+
+                const freq = this.xToFreq(mouseX);
+                const wavelength = 300 / freq;
+                
+                // Track hits against active bounds
+                const activeBands = BANDS.filter(b => freq >= b.freqMin && freq <= b.freqMax);
+                
+                // Highlight block update tracking
+                const lastHover = this.hoveredBand;
+                this.hoveredBand = activeBands.find(b => b.type === 'gnss') || activeBands[0] || null;
+                if (this.hoveredBand !== lastHover) this.render();
+
+                this.tooltip.style.display = 'block';
+                this.tooltip.style.left = (e.clientX - rect.left + 15) + 'px';
+                this.tooltip.style.top = (e.clientY - rect.top + 15) + 'px';
+
+                let html = `
+                    <div class="tooltip-title">Position Node Data</div>
+                    <div class="tooltip-row"><span class="tooltip-label">Frequency:</span><span class="tooltip-value">${freq.toFixed(4)} GHz</span></div>
+                    <div class="tooltip-row"><span class="tooltip-label">Wavelength:</span><span class="tooltip-value">${wavelength.toFixed(2)} mm</span></div>
+                `;
+
+                if (activeBands.length > 0) {
+                    html += `<div class="tooltip-title" style="margin-top:8px; border-top:1px dashed #1f4a66; padding-top:4px;">Intersecting Profiles</div>`;
+                    activeBands.forEach(b => {
+                        html += `
+                            <div class="tooltip-row" style="margin-bottom:2px;">
+                                <span class="tooltip-label" style="color:${b.color}">${b.name} (${b.type.toUpperCase()}):</span>
+                                <span class="tooltip-value" style="font-size:0.75rem;">${b.freqMin}–${b.freqMax} GHz</span>
+                            </div>
+                        `;
+                    });
+                }
+                this.tooltip.innerHTML = html;
+            }
+
+            render() {
+                const w = this.logicalWidth;
+                const h = this.logicalHeight;
+                this.ctx.clearRect(0, 0, w, h);
+
+                // Background fills
+                this.ctx.fillStyle = '#102233';
+                this.ctx.fillRect(0, 0, w, h);
+
+                const currentRange = this.maxFreq - this.minFreq;
+                const zoomX = (41.2 / currentRange);
+                document.getElementById('zoomDisplay').textContent = `${zoomX.toFixed(1)}× Matrix`;
+
+                // Render Spectrum Allocation Blocks
+                BANDS.forEach(band => {
+                    if (band.freqMax < this.minFreq || band.freqMin > this.maxFreq) return;
+
+                    const xStart = this.freqToX(Math.max(band.freqMin, this.minFreq));
+                    const xEnd = this.freqToX(Math.min(band.freqMax, this.maxFreq));
+                    const blockW = xEnd - xStart;
+                    if (blockW < 0.5) return;
+
+                    const isHovered = this.hoveredBand && this.hoveredBand.id === band.id;
+                    const yTop = band.type === 'gnss' ? 60 : 160;
+                    const blockH = 80;
+
+                    this.ctx.fillStyle = isHovered ? band.color + '60' : band.color + '25';
+                    this.ctx.strokeStyle = band.color;
+                    this.ctx.lineWidth = isHovered ? 2.5 : 1.2;
+
+                    this.ctx.fillRect(xStart, yTop, blockW, blockH);
+                    this.ctx.strokeRect(xStart, yTop, blockW, blockH);
+
+                    // Labels management inside canvas elements
+                    if (blockW > 30) {
+                        this.ctx.fillStyle = isHovered ? '#ffffff' : band.color;
+                        this.ctx.font = `bold ${blockW < 50 ? '10px' : '12px'} monospace`;
+                        this.ctx.textAlign = 'center';
+                        this.ctx.fillText(band.name, xStart + (blockW / 2), yTop + (blockH / 2) + 4);
+                    }
+                });
+
+                // Multi-tier Scale Ticks Mechanics
+                this.ctx.strokeStyle = '#2d5a7a';
+                this.ctx.fillStyle = '#a8b5c4';
+                this.ctx.lineWidth = 1;
+                this.ctx.font = '10px monospace';
+
+                let majorDelta = 5;
+                if (currentRange < 15) majorDelta = 2;
+                if (currentRange < 6) majorDelta = 1;
+                if (currentRange < 2) majorDelta = 0.2;
+                if (currentRange < 0.5) majorDelta = 0.05;
+
+                const startTick = Math.ceil(this.minFreq / majorDelta) * majorDelta;
+                for (let f = startTick; f <= this.maxFreq; f += majorDelta) {
+                    const x = this.freqToX(f);
+                    
+                    // Top Axis (Frequency)
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(x, 25);
+                    this.ctx.lineTo(x, 35);
+                    this.ctx.stroke();
+                    this.ctx.textAlign = 'center';
+                    this.ctx.fillText(f.toFixed(2) + ' GHz', x, 18);
+
+                    // Bottom Axis (Wavelength)
+                    const wl = 300 / f;
+                    const wlStr = wl >= 10 ? (wl / 10).toFixed(2) + ' cm' : wl.toFixed(1) + ' mm';
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(x, h - 35);
+                    this.ctx.lineTo(x, h - 25);
+                    this.ctx.stroke();
+                    this.ctx.fillStyle = '#7cb9d9';
+                    this.ctx.fillText(wlStr, x, h - 12);
+                    this.ctx.fillStyle = '#a8b5c4';
+                }
+            }
+        }
+
+        // DOM Renders Execution Systems
+        function renderRulerElements() {
+            const container = document.getElementById('rulerContainer');
+            const anchors = [
+                { freqMin: 1.565, freqMax: 1.585, name: 'L1 GPS Center', desc: 'Primary core civil node locator grid.' },
+                { freqMin: 4.0, freqMax: 8.0, name: 'C-Band Spectrum', desc: 'Satellite communication allocations zone.' },
+                { freqMin: 12.0, freqMax: 18.0, name: 'Ku-Band Array', desc: 'Direct delivery broadband infrastructure nodes.' },
+                { freqMin: 26.5, freqMax: 40.0, name: 'Ka-Band Core', desc: 'High density millimeter processing arrays.' }
+            ];
+
+            anchors.forEach(a => {
+                const center = (a.freqMin + a.freqMax) / 2;
+                const wl = 300 / center;
+                const card = document.createElement('div');
+                card.className = 'ruler-item';
+                card.innerHTML = `
+                    <div class="ruler-freq">${center.toFixed(2)} GHz – ${a.name}</div>
+                    <div class="ruler-wavelength">${wl >= 10 ? (wl/10).toFixed(1)+' cm' : wl.toFixed(1)+' mm'}</div>
+                    <div class="ruler-bar"></div>
+                    <div class="ruler-note">${a.desc}</div>
+                `;
+                card.addEventListener('click', () => window.focusOnRange(a.freqMin, a.freqMax));
+                container.appendChild(card);
+            });
+        }
+
+        function renderConstellationCards() {
+            const grid = document.getElementById('constellationsGrid');
+            CONSTELLATIONS.forEach(c => {
+                const card = document.createElement('div');
+                card.className = 'constellation-card';
+                card.innerHTML = `
+                    <div class="constellation-name">${c.name}</div>
+                    <div class="constellation-country">${c.country}</div>
+                    <div class="constellation-bands">${c.bands.map(b => `<span class="band-tag">${b}</span>`).join('')}</div>
+                    <p style="font-size:0.85rem; color:var(--text-secondary); line-height:1.4;">${c.description}</p>
+                `;
+                
+                card.addEventListener('click', () => {
+                    const targetBands = BANDS.filter(b => c.bands.some(tag => b.name.includes(tag)));
+                    if (targetBands.length > 0) {
+                        const mins = targetBands.map(b => b.freqMin);
+                        const maxs = targetBands.map(b => b.freqMax);
+                        window.focusOnRange(Math.min(...mins), Math.max(...maxs));
+                    }
+                });
+                grid.appendChild(card);
+            });
+        }
+
+        function renderReferencesLayout() {
+            const grid = document.getElementById('referencesGrid');
+            REFERENCES.forEach(r => {
+                const item = document.createElement('div');
+                item.className = 'reference';
+                item.innerHTML = `<div class="reference-title">${r.title}</div><div class="reference-source">${r.source}</div>`;
+                grid.appendChild(item);
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            new AdvancedSpectrum();
+            renderRulerElements();
+            renderConstellationCards();
+            renderReferencesLayout();
+        });
+    </script>
+</body>
+</html>
